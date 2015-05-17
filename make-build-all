@@ -1,0 +1,119 @@
+#!/usr/bin/env python
+
+import argparse
+import logging
+import os
+import re
+import subprocess
+import sys
+
+# Specify target filters as regular expressions
+target_filters = [
+    r'all',       # Exclude target "all"
+    r'clean',     # Exclude target "clean"
+    r'Makefile',  # Exclude target "Makefile"
+    r'.*/$',      # Exclude targets ending with "/" (directories)
+]
+
+def make_extract_script():
+    if sys.platform == 'linux2':
+        script = os.path.join(os.path.dirname(__file__),
+                              'make-bash-completion-linux')
+        return """
+            #!/bin/bash
+            set -e
+
+            . %(script)s
+            sed -nrf <(_make_target_extract_script --) Makefile
+        """ % locals()
+    elif sys.platform == 'darwin':
+        script = os.path.join(os.path.dirname(__file__),
+                              'make-bash-completion-darwin')
+        return """
+            #!/bin/bash
+            set -e
+
+            . %(script)s
+            _make_target_extract_script
+        """ % locals()
+    else:
+        logging.error('Platform ' + sys.platform + ' not supported.')
+        exit(1)
+
+def get_all_targets():
+    if not os.path.exists(os.path.join(os.getcwd(), 'Makefile')):
+        logging.error('No Makefile found')
+        exit(1)
+
+    script = make_extract_script()
+    targets = subprocess.check_output(script,
+                                      shell=True,
+                                      executable='/bin/bash')
+    return [s.strip() for s in targets.splitlines()]
+
+def make_build_script(configure_cmd, build_cmd, target):
+    return """
+    set -e
+    mkdir -p build-%(target)s
+    cd build-%(target)s
+    %(configure_cmd)s
+    %(build_cmd)s %(target)s
+    cd ..
+    """ % locals()
+
+def build(configure_cmd, build_cmd, target):
+    script = make_build_script(configure_cmd, build_cmd, target)
+    result = None
+    try:
+        result = subprocess.check_output(script,
+                                         shell=True,
+                                         stderr=subprocess.STDOUT)
+        with open('build-' + target + '.log', 'w') as fd:
+            fd.write(result)
+        return True
+    except subprocess.CalledProcessError, e:
+        with open('build-' + target + '.log', 'w') as fd:
+            fd.write('== command ==\n\n')
+            fd.write(str(e))
+            fd.write('\n\n== output ==\n\n')
+            fd.write(str(e.output))
+        return False
+
+def match_filter(target):
+    for target_filter in target_filters:
+        if re.match(target_filter, target):
+            return True
+    return False
+
+def build_all(configure_cmd, build_cmd):
+    targets = get_all_targets()
+    for target in targets:
+        if not match_filter(target):
+            print('Building ' + target + ': '),
+            if build(configure_cmd, build_cmd, target):
+                print('OK')
+            else:
+                print('Failed')
+
+def parse_args():
+    """ Parse the command line arguments
+
+    """
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--configure', '-c',
+                        help='configure step',
+                        default='')
+    parser.add_argument('--build', '-b',
+                        help='build step',
+                        required=True,
+                        default='')
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    build_all(configure_cmd=args.configure, build_cmd=args.build)
+
+if __name__ == "__main__":
+    main()
+
